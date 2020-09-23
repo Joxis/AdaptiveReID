@@ -1,0 +1,8 @@
+cython
+matplotlib
+pandas
+pydot
+scikit-learn
+tensorflow==2.2.0
+opencv-python
+albumentations

@@ -887,10 +887,7 @@ class HistoryLogger(Callback):
 def main(_):
     print("Getting hyperparameters ...")
     print("Using command {}".format(" ".join(sys.argv)))
-    flag_values_dict = FLAGS.flag_values_dict()
-    for flag_name in sorted(flag_values_dict.keys()):
-        flag_value = flag_values_dict[flag_name]
-        print(flag_name, flag_value)
+
     root_folder_path, dataset_name = FLAGS.root_folder_path, FLAGS.dataset_name
     backbone_model_name, freeze_backbone_for_N_epochs = FLAGS.backbone_model_name, FLAGS.freeze_backbone_for_N_epochs
     image_height, image_width = FLAGS.image_height, FLAGS.image_width
@@ -913,11 +910,7 @@ def main(_):
     evaluate_testing_every_N_epochs = FLAGS.evaluate_testing_every_N_epochs
     identity_num_per_batch, image_num_per_identity = FLAGS.identity_num_per_batch, FLAGS.image_num_per_identity
     batch_size = identity_num_per_batch * image_num_per_identity
-    learning_rate_mode, learning_rate_start, learning_rate_end = FLAGS.learning_rate_mode, FLAGS.learning_rate_start, FLAGS.learning_rate_end
-    learning_rate_base, learning_rate_warmup_epochs, learning_rate_steady_epochs = FLAGS.learning_rate_base, FLAGS.learning_rate_warmup_epochs, FLAGS.learning_rate_steady_epochs
-    learning_rate_drop_factor, learning_rate_lower_bound = FLAGS.learning_rate_drop_factor, FLAGS.learning_rate_lower_bound
     steps_per_epoch = FLAGS.steps_per_epoch
-    epoch_num = FLAGS.epoch_num
     workers = FLAGS.workers
     use_multiprocessing = workers > 1
     image_augmentor_name = FLAGS.image_augmentor_name
@@ -1073,28 +1066,7 @@ def main(_):
         every_N_epochs=evaluate_testing_every_N_epochs,
         output_folder_path=output_folder_path if save_data_to_disk else None)
     inspect_regularization_factors_callback = InspectRegularizationFactors()
-    optimal_model_file_path = os.path.join(output_folder_path,
-                                           "training_model.h5")
-    modelcheckpoint_monitor = "test_cosine_False_1_mAP_score" if use_testing else "valid_cosine_False_1_mAP_score"
-    modelcheckpoint_callback = ModelCheckpoint(filepath=optimal_model_file_path,
-                                               monitor=modelcheckpoint_monitor,
-                                               mode="max",
-                                               save_best_only=True,
-                                               save_weights_only=False,
-                                               verbose=1)
-    learningratescheduler_callback = LearningRateScheduler(
-        schedule=lambda epoch_index: learning_rate_scheduler(
-            epoch_index=epoch_index,
-            epoch_num=epoch_num,
-            learning_rate_mode=learning_rate_mode,
-            learning_rate_start=learning_rate_start,
-            learning_rate_end=learning_rate_end,
-            learning_rate_base=learning_rate_base,
-            learning_rate_warmup_epochs=learning_rate_warmup_epochs,
-            learning_rate_steady_epochs=learning_rate_steady_epochs,
-            learning_rate_drop_factor=learning_rate_drop_factor,
-            learning_rate_lower_bound=learning_rate_lower_bound),
-        verbose=1)
+
     if len(pretrained_model_file_path) > 0:
         assert os.path.isfile(pretrained_model_file_path)
         print("Loading weights from {} ...".format(pretrained_model_file_path))
@@ -1122,52 +1094,6 @@ def main(_):
                            workers=workers,
                            use_multiprocessing=use_multiprocessing,
                            verbose=2)
-    else:
-        if freeze_backbone_for_N_epochs > 0:
-            print("Freeze layers in the backbone model for {} epochs.".format(
-                freeze_backbone_for_N_epochs))
-            historylogger_callback = HistoryLogger(
-                output_folder_path=os.path.join(output_folder_path,
-                                                "training_A"))
-            training_model.fit(x=train_generator,
-                               steps_per_epoch=steps_per_epoch,
-                               callbacks=[
-                                   valid_evaluator_callback,
-                                   test_evaluator_callback,
-                                   learningratescheduler_callback,
-                                   historylogger_callback
-                               ],
-                               epochs=freeze_backbone_for_N_epochs,
-                               workers=workers,
-                               use_multiprocessing=use_multiprocessing,
-                               verbose=2)
-
-            print("Unfreeze layers in the backbone model.")
-            for item in training_model.layers:
-                item.trainable = True
-            training_model.compile(**training_model.compile_kwargs)
-
-        print("Perform conventional training for {} epochs.".format(epoch_num))
-        historylogger_callback = HistoryLogger(
-            output_folder_path=os.path.join(output_folder_path, "training_B"))
-        training_model.fit(x=train_generator,
-                           steps_per_epoch=steps_per_epoch,
-                           callbacks=[
-                               inspect_regularization_factors_callback,
-                               valid_evaluator_callback,
-                               test_evaluator_callback,
-                               modelcheckpoint_callback,
-                               learningratescheduler_callback,
-                               historylogger_callback
-                           ],
-                           epochs=epoch_num,
-                           workers=workers,
-                           use_multiprocessing=use_multiprocessing,
-                           verbose=2)
-
-        if not os.path.isfile(optimal_model_file_path):
-            print("Saving model to {} ...".format(optimal_model_file_path))
-            training_model.save(optimal_model_file_path)
 
     print("All done!")
 
