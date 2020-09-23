@@ -1093,7 +1093,6 @@ def main(_):
         training_model.fit(x=train_generator,
                            steps_per_epoch=1,
                            callbacks=[
-                               inspect_regularization_factors_callback,
                                valid_evaluator_callback,
                                test_evaluator_callback, historylogger_callback
                            ],
