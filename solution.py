@@ -1085,11 +1085,10 @@ def main(_):
             output_folder_path=os.path.join(output_folder_path, "evaluation"))
         training_model.fit(x=train_generator,
                            steps_per_epoch=1,
-                           # callbacks=[
-                           #     inspect_regularization_factors_callback,
-                           #     valid_evaluator_callback,
-                           #     test_evaluator_callback, historylogger_callback
-                           # ],
+                           callbacks=[
+                               valid_evaluator_callback,
+                               test_evaluator_callback,
+                           ],
                            epochs=1,
                            workers=workers,
                            use_multiprocessing=use_multiprocessing,
