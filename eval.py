@@ -885,12 +885,6 @@ class HistoryLogger(Callback):
 
 
 def main(_):
-    print("Getting hyperparameters ...")
-    print("Using command {}".format(" ".join(sys.argv)))
-    flag_values_dict = FLAGS.flag_values_dict()
-    for flag_name in sorted(flag_values_dict.keys()):
-        flag_value = flag_values_dict[flag_name]
-        print(flag_name, flag_value)
     root_folder_path, dataset_name = FLAGS.root_folder_path, FLAGS.dataset_name
     backbone_model_name, freeze_backbone_for_N_epochs = FLAGS.backbone_model_name, FLAGS.freeze_backbone_for_N_epochs
     image_height, image_width = FLAGS.image_height, FLAGS.image_width
