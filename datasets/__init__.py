@@ -8,6 +8,7 @@ from .dukemtmc_reid import \
 from .market1501 import \
     load_Market1501  # pylint: disable=relative-beyond-top-level
 from .msmt17 import load_MSMT17  # pylint: disable=relative-beyond-top-level
+from .custom import load_custom
 
 
 def _get_root_folder_path():
@@ -41,7 +42,8 @@ def load_accumulated_info_of_dataset(root_folder_path, dataset_name):
     dataset_name_to_load_function_dict = {
         "Market1501": load_Market1501,
         "DukeMTMC_reID": load_DukeMTMC_reID,
-        "MSMT17": load_MSMT17
+        "MSMT17": load_MSMT17,
+        "custom": load_custom,
     }
     assert dataset_name in dataset_name_to_load_function_dict
     load_function = dataset_name_to_load_function_dict[dataset_name]
