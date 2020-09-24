@@ -936,9 +936,11 @@ def main(_):
     print("Recreating the output folder at {} ...".format(output_folder_path))
 
     print("Loading the annotations of the {} dataset ...".format(dataset_name))
-    _, test_query_accumulated_info_dataframe, \
+    train_and_valid_accumulated_info_dataframe, test_query_accumulated_info_dataframe, \
         test_gallery_accumulated_info_dataframe, train_and_valid_attribute_name_to_label_encoder_dict = \
         load_accumulated_info_of_dataset(root_folder_path=root_folder_path, dataset_name=dataset_name)
+
+    train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe
 
     print("Initiating the model ...")
     training_model, inference_model, preprocess_input = init_model(
@@ -965,7 +967,7 @@ def main(_):
 
     print("Perform training ...")
     train_generator = TrainDataSequence(
-        accumulated_info_dataframe=None,
+        accumulated_info_dataframe=train_accumulated_info_dataframe,
         attribute_name_to_label_encoder_dict=
         train_and_valid_attribute_name_to_label_encoder_dict,
         preprocess_input=preprocess_input,
