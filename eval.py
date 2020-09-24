@@ -936,61 +936,9 @@ def main(_):
     print("Recreating the output folder at {} ...".format(output_folder_path))
 
     print("Loading the annotations of the {} dataset ...".format(dataset_name))
-    train_and_valid_accumulated_info_dataframe, test_query_accumulated_info_dataframe, \
+    _, test_query_accumulated_info_dataframe, \
         test_gallery_accumulated_info_dataframe, train_and_valid_attribute_name_to_label_encoder_dict = \
         load_accumulated_info_of_dataset(root_folder_path=root_folder_path, dataset_name=dataset_name)
-
-    if use_validation:
-        print("Using customized cross validation splits ...")
-        train_and_valid_identity_ID_array = train_and_valid_accumulated_info_dataframe[
-            "identity_ID"].values
-        train_indexes, valid_indexes = apply_stratifiedshufflesplit(
-            y=train_and_valid_identity_ID_array, test_size=validation_size)
-        train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe.iloc[
-            train_indexes]
-        valid_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe.iloc[
-            valid_indexes]
-
-        print("Splitting the validation dataset ...")
-        valid_identity_ID_array = valid_accumulated_info_dataframe[
-            "identity_ID"].values
-        gallery_size = len(test_gallery_accumulated_info_dataframe) / (
-            len(test_query_accumulated_info_dataframe) +
-            len(test_gallery_accumulated_info_dataframe))
-        valid_query_indexes, valid_gallery_indexes = apply_stratifiedshufflesplit(
-            y=valid_identity_ID_array, test_size=gallery_size)
-        valid_query_accumulated_info_dataframe = valid_accumulated_info_dataframe.iloc[
-            valid_query_indexes]
-        valid_gallery_accumulated_info_dataframe = valid_accumulated_info_dataframe.iloc[
-            valid_gallery_indexes]
-    else:
-        train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe
-        valid_query_accumulated_info_dataframe, valid_gallery_accumulated_info_dataframe = None, None
-
-    if use_testing:
-        if testing_size != 1:
-            print("Using a subset from the testing dataset ...")
-            test_accumulated_info_dataframe = pd.concat([
-                test_query_accumulated_info_dataframe,
-                test_gallery_accumulated_info_dataframe
-            ],
-                                                        ignore_index=True)
-            test_identity_ID_array = test_accumulated_info_dataframe[
-                "identity_ID"].values
-            _, test_query_and_gallery_indexes = apply_groupshufflesplit(
-                groups=test_identity_ID_array, test_size=testing_size)
-            test_query_mask = test_query_and_gallery_indexes < len(
-                test_query_accumulated_info_dataframe)
-            test_gallery_mask = np.logical_not(test_query_mask)
-            test_query_indexes, test_gallery_indexes = test_query_and_gallery_indexes[
-                test_query_mask], test_query_and_gallery_indexes[
-                    test_gallery_mask]
-            test_query_accumulated_info_dataframe = test_accumulated_info_dataframe.iloc[
-                test_query_indexes]
-            test_gallery_accumulated_info_dataframe = test_accumulated_info_dataframe.iloc[
-                test_gallery_indexes]
-    else:
-        test_query_accumulated_info_dataframe, test_gallery_accumulated_info_dataframe = None, None
 
     print("Initiating the model ...")
     training_model, inference_model, preprocess_input = init_model(
@@ -1017,7 +965,7 @@ def main(_):
 
     print("Perform training ...")
     train_generator = TrainDataSequence(
-        accumulated_info_dataframe=train_accumulated_info_dataframe,
+        accumulated_info_dataframe=None,
         attribute_name_to_label_encoder_dict=
         train_and_valid_attribute_name_to_label_encoder_dict,
         preprocess_input=preprocess_input,
@@ -1033,9 +981,9 @@ def main(_):
     valid_evaluator_callback = Evaluator(
         inference_model=inference_model,
         split_name="valid",
-        query_accumulated_info_dataframe=valid_query_accumulated_info_dataframe,
+        query_accumulated_info_dataframe=None,
         gallery_accumulated_info_dataframe=
-        valid_gallery_accumulated_info_dataframe,
+        None,
         preprocess_input=preprocess_input,
         input_shape=input_shape,
         image_augmentor=image_augmentor,
