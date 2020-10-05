@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from itertools import product
+import time
 
 import cv2
 import matplotlib
@@ -656,6 +657,7 @@ def main(_):
 
     def extract_features(data_generator):
         print("Extracting features...")
+        start = time.time()
         # Extract the accumulated_feature_array
         accumulated_feature_array = None
         for _ in np.arange(augmentation_num):
@@ -675,11 +677,17 @@ def main(_):
                 accumulated_feature_array = feature_array / augmentation_num
             else:
                 accumulated_feature_array += feature_array / augmentation_num
+
+        print("Extracted features for {} images in {}s.".format(
+            len(accumulated_feature_array),
+            time.time() - start
+        ))
         return accumulated_feature_array
 
     def compute_distance_matrix(query_image_features, gallery_image_features,
                                 metric, use_re_ranking):
         print("Computing distance matrix...")
+        start = time.time()
         # Compute the distance matrix
         query_gallery_distance = pairwise_distances(query_image_features,
                                                     gallery_image_features,
@@ -696,6 +704,11 @@ def main(_):
             distance_matrix = re_ranking(query_gallery_distance,
                                          query_query_distance,
                                          gallery_gallery_distance)
+
+        print("Computed {} distance matrix in {}s.".format(
+            distance_matrix.shape,
+            time.time() - start
+        ))
 
         return distance_matrix
 
