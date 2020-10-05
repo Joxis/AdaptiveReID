@@ -740,22 +740,7 @@ def main(_):
         ['image_file_path', 'identity_ID', 'camera_ID']]
     q_dataset = [tuple(x) for x in q_dataset_pd.to_numpy()]
     visualizer = Visualizer(g_dataset, q_dataset)
-    visualizer.run(distance_matrix, num=200)
-
-    num_query, num_gallery = distance_matrix.shape
-    for i in range(num_query):
-        distances = [distance_matrix[i, j] for j in range(num_gallery)]
-        min_distance = min(distances)
-
-        if min_distance <= 0.17:
-            gallery_idx = distances.index(min_distance)
-            gallery_id = gallery_identity_id_array[gallery_idx]
-            gallery_camera_id = gallery_camera_id_array[gallery_idx]
-            query_id = query_identity_id_array[i]
-            query_camera_id = query_camera_id_array[i]
-            print("Identity {}.{} is closest ({:.4f}) to identity {}.{}.".format(
-                query_camera_id, query_id, min_distance, gallery_camera_id,
-                gallery_id))
+    visualizer.run(distance_matrix, num=500)
 
     print("All done!")
 

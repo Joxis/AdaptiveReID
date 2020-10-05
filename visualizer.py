@@ -106,7 +106,8 @@ class Visualizer:
         if no_matches:
             # abs_save_dir = os.path.abspath(save_dir)
             # os.rename(abs_save_dir, "{}-{}".format(abs_save_dir, 'f'))
-            print(save_dir)
+            # print(save_dir)
+            pass
         imname = osp.basename(osp.splitext(qimg_path)[0])
         cv.imwrite(osp.join(save_dir, imname + '.jpg'), grid_img)
 
@@ -140,7 +141,7 @@ class Visualizer:
                 result_image_tuples.append(self.g_dataset[min_idx])
 
             # Save images
-            print(self.q_dataset)
+            # print(self.q_dataset)
             self.save_query_images(out_pid_dir, self.q_dataset[i])
             self.save_gallery_images(out_pid_dir, result_image_tuples,
                                      result_distances)
