@@ -1,7 +1,6 @@
 import os
 import pickle
 import shutil
-import sys
 import time
 from collections import OrderedDict
 from datetime import datetime
@@ -11,14 +10,12 @@ import cv2
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 from absl import app, flags
 from sklearn.metrics import pairwise_distances
 from sklearn.model_selection import GroupShuffleSplit, StratifiedShuffleSplit
 from tensorflow.keras import backend as K
-from tensorflow.keras.callbacks import (Callback, LearningRateScheduler,
-                                        ModelCheckpoint)
+from tensorflow.keras.callbacks import Callback
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.layers import (Activation, BatchNormalization,
                                      Concatenate, Conv2D, Dense,
@@ -33,9 +30,8 @@ from datasets import load_accumulated_info_of_dataset
 from evaluation.metrics import compute_CMC_mAP
 from evaluation.post_processing.re_ranking_ranklist import re_ranking
 from metric_learning.triplet_hermans import batch_hard, cdist
-from regularizers.adaptation import InspectRegularizationFactors
 from utils.model_utils import replicate_model, specify_regularizers
-from utils.vis_utils import summarize_model, visualize_model
+from utils.vis_utils import visualize_model
 
 # Specify the backend of matplotlib
 matplotlib.use("Agg")
@@ -186,8 +182,10 @@ def init_model(backbone_model_name,
 
         # Add categorical crossentropy loss
         assert len(attribute_name_to_label_encoder_dict) == 1
-        label_encoder = attribute_name_to_label_encoder_dict["identity_ID"]
-        class_num = len(label_encoder.classes_)
+        # label_encoder = attribute_name_to_label_encoder_dict["identity_ID"]
+        # class_num = len(label_encoder.classes_)
+        # TODO: hardcoded for Market1501 model
+        class_num = 751
         classification_output_tensor = Dense(
             units=class_num,
             use_bias=False,
@@ -434,8 +432,8 @@ class TrainDataSequence(Sequence):
                 identity_ID_to_image_file_paths_in_sections_dict[
                     identity_ID] = image_file_paths_in_sections
 
-            while len(identity_ID_to_image_file_paths_in_sections_dict
-                     ) >= self.identity_num_per_batch:
+            while len(identity_ID_to_image_file_paths_in_sections_dict) \
+                    >= self.identity_num_per_batch:
                 # Choose identity_num_per_batch identity_IDs
                 identity_IDs = np.random.choice(
                     list(identity_ID_to_image_file_paths_in_sections_dict.keys(
@@ -639,6 +637,7 @@ class Evaluator(Callback):
         self.metrics = ["cosine"]
 
     def extract_features(self, data_generator):
+        print("Extracting features...")
         # Extract the accumulated_feature_array
         accumulated_feature_array = None
         for _ in np.arange(self.augmentation_num):
@@ -680,6 +679,7 @@ class Evaluator(Callback):
 
     def compute_distance_matrix(self, query_image_features,
                                 gallery_image_features, metric, use_re_ranking):
+        print("Computing distance matrix...")
         # Compute the distance matrix
         query_gallery_distance = pairwise_distances(query_image_features,
                                                     gallery_image_features,
@@ -896,22 +896,11 @@ def main(_):
     beta_regularization_factor = FLAGS.beta_regularization_factor
     use_adaptive_l1_l2_regularizer = FLAGS.use_adaptive_l1_l2_regularizer
     min_value_in_clipping, max_value_in_clipping = FLAGS.min_value_in_clipping, FLAGS.max_value_in_clipping
-    validation_size = FLAGS.validation_size
-    validation_size = int(
-        validation_size) if validation_size > 1 else validation_size
-    use_validation = validation_size != 0
-    testing_size = FLAGS.testing_size
-    testing_size = int(testing_size) if testing_size > 1 else testing_size
-    use_testing = testing_size != 0
     evaluate_validation_every_N_epochs = FLAGS.evaluate_validation_every_N_epochs
     evaluate_testing_every_N_epochs = FLAGS.evaluate_testing_every_N_epochs
     identity_num_per_batch, image_num_per_identity = FLAGS.identity_num_per_batch, FLAGS.image_num_per_identity
     batch_size = identity_num_per_batch * image_num_per_identity
-    learning_rate_mode, learning_rate_start, learning_rate_end = FLAGS.learning_rate_mode, FLAGS.learning_rate_start, FLAGS.learning_rate_end
-    learning_rate_base, learning_rate_warmup_epochs, learning_rate_steady_epochs = FLAGS.learning_rate_base, FLAGS.learning_rate_warmup_epochs, FLAGS.learning_rate_steady_epochs
-    learning_rate_drop_factor, learning_rate_lower_bound = FLAGS.learning_rate_drop_factor, FLAGS.learning_rate_lower_bound
     steps_per_epoch = FLAGS.steps_per_epoch
-    epoch_num = FLAGS.epoch_num
     workers = FLAGS.workers
     use_multiprocessing = workers > 1
     image_augmentor_name = FLAGS.image_augmentor_name
@@ -1030,19 +1019,25 @@ def main(_):
         training_model.trainable = False
         training_model.compile(**training_model.compile_kwargs)
 
-        assert testing_size == 1, "Use all testing samples for evaluation!"
-        historylogger_callback = HistoryLogger(
-            output_folder_path=os.path.join(output_folder_path, "evaluation"))
-        training_model.fit(x=train_generator,
-                           steps_per_epoch=1,
-                           callbacks=[
-                               valid_evaluator_callback,
-                               test_evaluator_callback, historylogger_callback
-                           ],
-                           epochs=1,
-                           workers=workers,
-                           use_multiprocessing=use_multiprocessing,
-                           verbose=2)
+        query_generator = TestDataSequence(
+            test_query_accumulated_info_dataframe, preprocess_input, input_shape,
+            image_augmentor, use_data_augmentation_in_evaluation, batch_size)
+        query_generator.disable_horizontal_flipping()
+        feature_array = inference_model.predict(
+            x=query_generator,
+            workers=workers,
+            use_multiprocessing=use_multiprocessing)
+        print(feature_array.shape)
+
+        # training_model.fit(x=train_generator,
+        #                    steps_per_epoch=1,
+        #                    callbacks=[
+        #                        valid_evaluator_callback, test_evaluator_callback
+        #                    ],
+        #                    epochs=1,
+        #                    workers=workers,
+        #                    use_multiprocessing=use_multiprocessing,
+        #                    verbose=2)
 
     print("All done!")
 

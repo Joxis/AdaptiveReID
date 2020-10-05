@@ -1,7 +1,6 @@
 import os
 import pickle
 import shutil
-import sys
 import time
 from collections import OrderedDict
 from datetime import datetime
@@ -11,14 +10,12 @@ import cv2
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 from absl import app, flags
 from sklearn.metrics import pairwise_distances
 from sklearn.model_selection import GroupShuffleSplit, StratifiedShuffleSplit
 from tensorflow.keras import backend as K
-from tensorflow.keras.callbacks import (Callback, LearningRateScheduler,
-                                        ModelCheckpoint)
+from tensorflow.keras.callbacks import Callback
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.layers import (Activation, BatchNormalization,
                                      Concatenate, Conv2D, Dense,
@@ -33,9 +30,9 @@ from datasets import load_accumulated_info_of_dataset
 from evaluation.metrics import compute_CMC_mAP
 from evaluation.post_processing.re_ranking_ranklist import re_ranking
 from metric_learning.triplet_hermans import batch_hard, cdist
-from regularizers.adaptation import InspectRegularizationFactors
 from utils.model_utils import replicate_model, specify_regularizers
-from utils.vis_utils import summarize_model, visualize_model
+from utils.vis_utils import visualize_model
+from visualizer import Visualizer
 
 # Specify the backend of matplotlib
 matplotlib.use("Agg")
@@ -130,27 +127,6 @@ flags.DEFINE_string(
 FLAGS = flags.FLAGS
 
 
-def apply_stratifiedshufflesplit(y, test_size, random_state=0):
-    if test_size == 1:
-        train_indexes = np.arange(len(y))  # Hacky snippet
-        test_indexes = np.arange(len(y))
-    else:
-        shufflesplit_instance = StratifiedShuffleSplit(
-            n_splits=1, test_size=test_size, random_state=random_state)
-        train_indexes, test_indexes = next(
-            shufflesplit_instance.split(np.arange(len(y)), y=y))
-    return train_indexes, test_indexes
-
-
-def apply_groupshufflesplit(groups, test_size, random_state=0):
-    groupshufflesplit_instance = GroupShuffleSplit(n_splits=1,
-                                                   test_size=test_size,
-                                                   random_state=random_state)
-    train_indexes, test_indexes = next(
-        groupshufflesplit_instance.split(np.arange(len(groups)), groups=groups))
-    return train_indexes, test_indexes
-
-
 def init_model(backbone_model_name,
                freeze_backbone_for_N_epochs,
                input_shape,
@@ -186,8 +162,10 @@ def init_model(backbone_model_name,
 
         # Add categorical crossentropy loss
         assert len(attribute_name_to_label_encoder_dict) == 1
-        label_encoder = attribute_name_to_label_encoder_dict["identity_ID"]
-        class_num = len(label_encoder.classes_)
+        # label_encoder = attribute_name_to_label_encoder_dict["identity_ID"]
+        # class_num = len(label_encoder.classes_)
+        # TODO: hardcoded for Market1501 model
+        class_num = 751
         classification_output_tensor = Dense(
             units=class_num,
             use_bias=False,
@@ -346,8 +324,8 @@ def init_model(backbone_model_name,
     training_model.compile(**training_model.compile_kwargs)
 
     # Print the summary of the models
-    summarize_model(training_model)
-    summarize_model(inference_model)
+    # summarize_model(training_model)
+    # summarize_model(inference_model)
 
     return training_model, inference_model, preprocess_input
 
@@ -434,8 +412,8 @@ class TrainDataSequence(Sequence):
                 identity_ID_to_image_file_paths_in_sections_dict[
                     identity_ID] = image_file_paths_in_sections
 
-            while len(identity_ID_to_image_file_paths_in_sections_dict
-                     ) >= self.identity_num_per_batch:
+            while len(identity_ID_to_image_file_paths_in_sections_dict) \
+                    >= self.identity_num_per_batch:
                 # Choose identity_num_per_batch identity_IDs
                 identity_IDs = np.random.choice(
                     list(identity_ID_to_image_file_paths_in_sections_dict.keys(
@@ -584,102 +562,124 @@ class TestDataSequence(Sequence):
         return image_content_array
 
 
-class Evaluator(Callback):
+def main(_):
+    root_folder_path, dataset_name = FLAGS.root_folder_path, FLAGS.dataset_name
+    backbone_model_name, freeze_backbone_for_N_epochs = FLAGS.backbone_model_name, FLAGS.freeze_backbone_for_N_epochs
+    image_height, image_width = FLAGS.image_height, FLAGS.image_width
+    input_shape = (image_height, image_width, 3)
+    region_num = FLAGS.region_num
+    kernel_regularization_factor = FLAGS.kernel_regularization_factor
+    bias_regularization_factor = FLAGS.bias_regularization_factor
+    gamma_regularization_factor = FLAGS.gamma_regularization_factor
+    beta_regularization_factor = FLAGS.beta_regularization_factor
+    use_adaptive_l1_l2_regularizer = FLAGS.use_adaptive_l1_l2_regularizer
+    min_value_in_clipping, max_value_in_clipping = FLAGS.min_value_in_clipping, FLAGS.max_value_in_clipping
+    identity_num_per_batch, image_num_per_identity = FLAGS.identity_num_per_batch, FLAGS.image_num_per_identity
+    batch_size = identity_num_per_batch * image_num_per_identity
+    steps_per_epoch = FLAGS.steps_per_epoch
+    workers = FLAGS.workers
+    use_multiprocessing = workers > 1
+    image_augmentor_name = FLAGS.image_augmentor_name
+    use_data_augmentation_in_training = FLAGS.use_data_augmentation_in_training
+    use_data_augmentation_in_evaluation = FLAGS.use_data_augmentation_in_evaluation
+    augmentation_num = FLAGS.augmentation_num
+    use_horizontal_flipping_in_evaluation = FLAGS.use_horizontal_flipping_in_evaluation
+    use_label_smoothing_in_training = FLAGS.use_label_smoothing_in_training
+    use_identity_balancing_in_training = FLAGS.use_identity_balancing_in_training
+    use_re_ranking = FLAGS.use_re_ranking
+    pretrained_model_file_path = FLAGS.pretrained_model_file_path
 
-    def __init__(self,
-                 inference_model,
-                 split_name,
-                 query_accumulated_info_dataframe,
-                 gallery_accumulated_info_dataframe,
-                 preprocess_input,
-                 input_shape,
-                 image_augmentor,
-                 use_data_augmentation,
-                 augmentation_num,
-                 use_horizontal_flipping,
-                 use_re_ranking,
-                 batch_size,
-                 workers,
-                 use_multiprocessing,
-                 rank_list=(1, 5, 10, 20),
-                 every_N_epochs=1,
-                 output_folder_path=None):
-        super(Evaluator, self).__init__()
+    output_folder_path = os.path.abspath(
+        os.path.join(
+            FLAGS.output_folder_path,
+            "{}_{}x{}".format(dataset_name, input_shape[0], input_shape[1]),
+            "{}_{}_{}".format(backbone_model_name, identity_num_per_batch,
+                              image_num_per_identity)))
+    shutil.rmtree(output_folder_path, ignore_errors=True)
+    os.makedirs(output_folder_path)
+    print("Recreating the output folder at {} ...".format(output_folder_path))
 
-        self.callback_disabled = query_accumulated_info_dataframe is None or gallery_accumulated_info_dataframe is None
-        if self.callback_disabled:
-            return
+    print("Loading the annotations of the {} dataset ...".format(dataset_name))
+    train_and_valid_accumulated_info_dataframe, test_query_accumulated_info_dataframe, \
+        test_gallery_accumulated_info_dataframe, train_and_valid_attribute_name_to_label_encoder_dict = \
+        load_accumulated_info_of_dataset(root_folder_path=root_folder_path, dataset_name=dataset_name)
 
-        self.inference_model = inference_model
-        self.split_name = split_name
-        self.query_generator = TestDataSequence(
-            query_accumulated_info_dataframe, preprocess_input, input_shape,
-            image_augmentor, use_data_augmentation, batch_size)
-        self.gallery_generator = TestDataSequence(
-            gallery_accumulated_info_dataframe, preprocess_input, input_shape,
-            image_augmentor, use_data_augmentation, batch_size)
-        self.query_identity_ID_array, self.query_camera_ID_array = query_accumulated_info_dataframe[
-            ["identity_ID", "camera_ID"]].values.transpose()
-        self.gallery_identity_ID_array, self.gallery_camera_ID_array = gallery_accumulated_info_dataframe[
-            ["identity_ID", "camera_ID"]].values.transpose()
-        self.preprocess_input, self.input_shape, self.image_augmentor, self.use_data_augmentation, self.augmentation_num, self.use_horizontal_flipping = \
-            preprocess_input, input_shape, image_augmentor, use_data_augmentation, augmentation_num, use_horizontal_flipping
-        self.use_re_ranking, self.batch_size = use_re_ranking, batch_size
-        self.workers, self.use_multiprocessing = workers, use_multiprocessing
-        self.rank_list, self.every_N_epochs = rank_list, every_N_epochs
-        self.output_file_path = None if output_folder_path is None else os.path.join(
-            output_folder_path, "{}.npz".format(split_name))
+    print("Initiating the model ...")
+    training_model, inference_model, preprocess_input = init_model(
+        backbone_model_name=backbone_model_name,
+        freeze_backbone_for_N_epochs=freeze_backbone_for_N_epochs,
+        input_shape=input_shape,
+        region_num=region_num,
+        attribute_name_to_label_encoder_dict=
+        train_and_valid_attribute_name_to_label_encoder_dict,
+        kernel_regularization_factor=kernel_regularization_factor,
+        bias_regularization_factor=bias_regularization_factor,
+        gamma_regularization_factor=gamma_regularization_factor,
+        beta_regularization_factor=beta_regularization_factor,
+        use_adaptive_l1_l2_regularizer=use_adaptive_l1_l2_regularizer,
+        min_value_in_clipping=min_value_in_clipping,
+        max_value_in_clipping=max_value_in_clipping)
 
-        if not use_data_augmentation and augmentation_num != 1:
-            print(
-                "Set augmentation_num to 1 since use_data_augmentation is False."
-            )
-            self.augmentation_num = 1
+    print("Initiating the image augmentor {} ...".format(image_augmentor_name))
+    image_augmentor = getattr(image_augmentation,
+                              image_augmentor_name)(image_height=image_height,
+                                                    image_width=image_width)
+    image_augmentor.compose_transforms()
 
-        self.metrics = ["cosine"]
+    # Model loading
+    train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe
+    train_generator = TrainDataSequence(
+        accumulated_info_dataframe=train_accumulated_info_dataframe,
+        attribute_name_to_label_encoder_dict=
+        train_and_valid_attribute_name_to_label_encoder_dict,
+        preprocess_input=preprocess_input,
+        input_shape=input_shape,
+        image_augmentor=image_augmentor,
+        use_data_augmentation=use_data_augmentation_in_training,
+        use_identity_balancing=use_identity_balancing_in_training,
+        use_label_smoothing=use_label_smoothing_in_training,
+        label_repetition_num=len(training_model.outputs),
+        identity_num_per_batch=identity_num_per_batch,
+        image_num_per_identity=image_num_per_identity,
+        steps_per_epoch=steps_per_epoch)
 
-    def extract_features(self, data_generator):
+    assert os.path.isfile(pretrained_model_file_path)
+    print("Loading weights from {} ...".format(pretrained_model_file_path))
+    # Hacky workaround for the issue with "load_weights"
+    if use_adaptive_l1_l2_regularizer:
+        _ = training_model.test_on_batch(train_generator[0])
+    training_model.load_weights(pretrained_model_file_path)
+
+    print("Freezing the whole model in the evaluation_only mode ...")
+    training_model.trainable = False
+    training_model.compile(**training_model.compile_kwargs)
+
+    def extract_features(data_generator):
+        print("Extracting features...")
         # Extract the accumulated_feature_array
         accumulated_feature_array = None
-        for _ in np.arange(self.augmentation_num):
+        for _ in np.arange(augmentation_num):
             data_generator.disable_horizontal_flipping()
-            feature_array = self.inference_model.predict(
+            feature_array = inference_model.predict(
                 x=data_generator,
-                workers=self.workers,
-                use_multiprocessing=self.use_multiprocessing)
-            if self.use_horizontal_flipping:
+                workers=workers,
+                use_multiprocessing=use_multiprocessing)
+            if use_horizontal_flipping_in_evaluation:
                 data_generator.enable_horizontal_flipping()
-                feature_array += self.inference_model.predict(
+                feature_array += inference_model.predict(
                     x=data_generator,
-                    workers=self.workers,
-                    use_multiprocessing=self.use_multiprocessing)
+                    workers=workers,
+                    use_multiprocessing=use_multiprocessing)
                 feature_array /= 2
             if accumulated_feature_array is None:
-                accumulated_feature_array = feature_array / self.augmentation_num
+                accumulated_feature_array = feature_array / augmentation_num
             else:
-                accumulated_feature_array += feature_array / self.augmentation_num
+                accumulated_feature_array += feature_array / augmentation_num
         return accumulated_feature_array
 
-    def split_features(self, accumulated_feature_array):
-        # Split the accumulated_feature_array into separate slices
-        feature_array_list = []
-        for embedding_size_index in np.arange(
-                len(self.inference_model.embedding_size_list)):
-            if embedding_size_index == 0:
-                start_index = 0
-                end_index = self.inference_model.embedding_size_list[0]
-            else:
-                start_index = np.sum(self.inference_model.
-                                     embedding_size_list[:embedding_size_index])
-                end_index = np.sum(self.inference_model.
-                                   embedding_size_list[:embedding_size_index +
-                                                       1])
-            feature_array = accumulated_feature_array[:, start_index:end_index]
-            feature_array_list.append(feature_array)
-        return feature_array_list
-
-    def compute_distance_matrix(self, query_image_features,
-                                gallery_image_features, metric, use_re_ranking):
+    def compute_distance_matrix(query_image_features, gallery_image_features,
+                                metric, use_re_ranking):
+        print("Computing distance matrix...")
         # Compute the distance matrix
         query_gallery_distance = pairwise_distances(query_image_features,
                                                     gallery_image_features,
@@ -699,407 +699,63 @@ class Evaluator(Callback):
 
         return distance_matrix
 
-    def on_epoch_end(self, epoch, logs=None):
-        if self.callback_disabled or (epoch + 1) % self.every_N_epochs != 0:
-            return
+    query_generator = TestDataSequence(
+        test_query_accumulated_info_dataframe, preprocess_input, input_shape,
+        image_augmentor, use_data_augmentation_in_evaluation, batch_size)
 
-        # Extract features
-        feature_extraction_start = time.time()
-        query_image_features_array = self.extract_features(self.query_generator)
-        gallery_image_features_array = self.extract_features(
-            self.gallery_generator)
-        feature_extraction_end = time.time()
-        feature_extraction_speed = (
-            len(query_image_features_array) + len(gallery_image_features_array)
-        ) / (feature_extraction_end - feature_extraction_start)
-        print("Speed of feature extraction: {:.2f} images per second.".format(
-            feature_extraction_speed))
+    gallery_generator = TestDataSequence(
+        test_gallery_accumulated_info_dataframe, preprocess_input, input_shape,
+        image_augmentor, use_data_augmentation_in_evaluation, batch_size)
 
-        # Check unique values in the features array
-        query_unique_values = np.unique(query_image_features_array)
-        additional_metrics = []
-        if len(query_unique_values) <= 2**8:
-            print("Unique values in query_image_features_array: {}".format(
-                query_unique_values))
-            additional_metrics.append("hamming")
+    query_features = extract_features(query_generator)
+    gallery_features = extract_features(gallery_generator)
+    print(query_features.shape)
+    print(gallery_features.shape)
 
-        # Save image features, identity ID and camera ID to disk
-        if self.output_file_path is not None:
-            np.savez(self.output_file_path,
-                     query_image_features_array=query_image_features_array,
-                     gallery_image_features_array=gallery_image_features_array,
-                     query_identity_ID_array=self.query_identity_ID_array,
-                     gallery_identity_ID_array=self.gallery_identity_ID_array,
-                     query_camera_ID_array=self.query_camera_ID_array,
-                     gallery_camera_ID_array=self.gallery_camera_ID_array)
+    distance_matrix = compute_distance_matrix(query_features, gallery_features,
+                                              "cosine", use_re_ranking)
+    print(distance_matrix.shape)
 
-        # Split features
-        print("embedding_size_list:", self.inference_model.embedding_size_list)
-        query_image_features_list = self.split_features(
-            query_image_features_array)
-        gallery_image_features_list = self.split_features(
-            gallery_image_features_array)
+    # Compute the CMC and mAP scores
+    query_identity_id_array, query_camera_id_array = \
+        test_query_accumulated_info_dataframe[
+            ["identity_ID", "camera_ID"]].values.transpose()
+    gallery_identity_id_array, gallery_camera_id_array = \
+        test_gallery_accumulated_info_dataframe[
+            ["identity_ID", "camera_ID"]].values.transpose()
+    print(query_identity_id_array[0], query_camera_id_array[0])
+    cmc_score_array, map_score = compute_CMC_mAP(
+        distmat=distance_matrix,
+        q_pids=query_identity_id_array,
+        g_pids=gallery_identity_id_array,
+        q_camids=query_camera_id_array,
+        g_camids=gallery_camera_id_array)
+    print(cmc_score_array, map_score)
 
-        for metric in self.metrics + additional_metrics:
-            distance_matrix_list = []
-            for query_image_features, gallery_image_features in zip(
-                    query_image_features_list, gallery_image_features_list):
-                distance_matrix = self.compute_distance_matrix(
-                    query_image_features, gallery_image_features, metric,
-                    self.use_re_ranking)
-                distance_matrix_list.append(distance_matrix)
+    # TODO: WIP
+    g_dataset_pd = test_gallery_accumulated_info_dataframe[
+        ['image_file_path', 'identity_ID', 'camera_ID']]
+    g_dataset = [tuple(x) for x in g_dataset_pd.to_numpy()]
+    q_dataset_pd = test_query_accumulated_info_dataframe[
+        ['image_file_path', 'identity_ID', 'camera_ID']]
+    q_dataset = [tuple(x) for x in q_dataset_pd.to_numpy()]
+    visualizer = Visualizer(g_dataset, q_dataset)
+    visualizer.run(distance_matrix, num=200)
 
-            method_name_list = (np.arange(len(distance_matrix_list)) +
-                                1).tolist()
-            for distance_matrix, method_name in zip(distance_matrix_list,
-                                                    method_name_list):
-                # Compute the CMC and mAP scores
-                CMC_score_array, mAP_score = compute_CMC_mAP(
-                    distmat=distance_matrix,
-                    q_pids=self.query_identity_ID_array,
-                    g_pids=self.gallery_identity_ID_array,
-                    q_camids=self.query_camera_ID_array,
-                    g_camids=self.gallery_camera_ID_array)
+    num_query, num_gallery = distance_matrix.shape
+    for i in range(num_query):
+        distances = [distance_matrix[i, j] for j in range(num_gallery)]
+        min_distance = min(distances)
 
-                # Append the CMC and mAP scores
-                logs["{}_{}_{}_{}_rank_to_accuracy_dict".format(
-                    self.split_name, metric, self.use_re_ranking,
-                    method_name)] = dict([("rank-{} accuracy".format(rank),
-                                           CMC_score_array[rank - 1])
-                                          for rank in self.rank_list])
-                logs["{}_{}_{}_{}_mAP_score".format(self.split_name, metric,
-                                                    self.use_re_ranking,
-                                                    method_name)] = mAP_score
-
-
-def learning_rate_scheduler(epoch_index, epoch_num, learning_rate_mode,
-                            learning_rate_start, learning_rate_end,
-                            learning_rate_base, learning_rate_warmup_epochs,
-                            learning_rate_steady_epochs,
-                            learning_rate_drop_factor,
-                            learning_rate_lower_bound):
-    learning_rate = None
-    if learning_rate_mode == "constant":
-        assert learning_rate_start == learning_rate_end, "starting and ending learning rates should be equal!"
-        learning_rate = learning_rate_start
-    elif learning_rate_mode == "linear":
-        learning_rate = (learning_rate_end - learning_rate_start) / (
-            epoch_num - 1) * epoch_index + learning_rate_start
-    elif learning_rate_mode == "cosine":
-        assert learning_rate_start > learning_rate_end, "starting learning rate should be higher than ending learning rate!"
-        learning_rate = (learning_rate_start - learning_rate_end) / 2 * np.cos(
-            np.pi * epoch_index /
-            (epoch_num - 1)) + (learning_rate_start + learning_rate_end) / 2
-    elif learning_rate_mode == "warmup":
-        learning_rate = (learning_rate_end - learning_rate_start) / (
-            learning_rate_warmup_epochs - 1) * epoch_index + learning_rate_start
-        learning_rate = np.min((learning_rate, learning_rate_end))
-    elif learning_rate_mode == "default":
-        if epoch_index < learning_rate_warmup_epochs:
-            learning_rate = (learning_rate_base - learning_rate_lower_bound) / (
-                learning_rate_warmup_epochs -
-                1) * epoch_index + learning_rate_lower_bound
-        else:
-            if learning_rate_drop_factor == 0:
-                learning_rate_drop_factor = np.exp(
-                    learning_rate_steady_epochs /
-                    (epoch_num - learning_rate_warmup_epochs * 2) *
-                    np.log(learning_rate_base / learning_rate_lower_bound))
-            learning_rate = learning_rate_base / np.power(
-                learning_rate_drop_factor,
-                int((epoch_index - learning_rate_warmup_epochs) /
-                    learning_rate_steady_epochs))
-    else:
-        assert False, "{} is an invalid argument!".format(learning_rate_mode)
-    learning_rate = np.max((learning_rate, learning_rate_lower_bound))
-    return learning_rate
-
-
-class HistoryLogger(Callback):
-
-    def __init__(self, output_folder_path):
-        super(HistoryLogger, self).__init__()
-
-        self.accumulated_logs_dict = {}
-        self.output_folder_path = output_folder_path
-
-        if not os.path.isdir(output_folder_path):
-            os.makedirs(output_folder_path)
-
-    def visualize(self, loss_name):
-        # Unpack the values
-        epoch_to_loss_value_dict = self.accumulated_logs_dict[loss_name]
-        epoch_list = sorted(epoch_to_loss_value_dict.keys())
-        loss_value_list = [
-            epoch_to_loss_value_dict[epoch] for epoch in epoch_list
-        ]
-        epoch_list = (np.array(epoch_list) + 1).tolist()
-
-        # Save the figure to disk
-        figure = plt.figure()
-        if isinstance(loss_value_list[0], dict):
-            for metric_name in loss_value_list[0].keys():
-                metric_value_list = [
-                    loss_value[metric_name] for loss_value in loss_value_list
-                ]
-                print("{} {} {:.6f}".format(loss_name, metric_name,
-                                            metric_value_list[-1]))
-                plt.plot(epoch_list,
-                         metric_value_list,
-                         label="{} {:.6f}".format(metric_name,
-                                                  metric_value_list[-1]))
-        else:
-            print("{} {:.6f}".format(loss_name, loss_value_list[-1]))
-            plt.plot(epoch_list,
-                     loss_value_list,
-                     label="{} {:.6f}".format(loss_name, loss_value_list[-1]))
-            plt.ylabel(loss_name)
-        plt.xlabel("Epoch")
-        plt.grid(True)
-        plt.legend(loc="best")
-        plt.savefig(
-            os.path.join(self.output_folder_path, "{}.png".format(loss_name)))
-        plt.close(figure)
-
-    def on_epoch_end(self, epoch, logs=None):
-        # Visualize each figure
-        for loss_name, loss_value in logs.items():
-            if loss_name not in self.accumulated_logs_dict:
-                self.accumulated_logs_dict[loss_name] = {}
-            self.accumulated_logs_dict[loss_name][epoch] = loss_value
-            self.visualize(loss_name)
-
-        # Save the accumulated_logs_dict to disk
-        with open(
-                os.path.join(self.output_folder_path,
-                             "accumulated_logs_dict.pkl"), "wb") as file_object:
-            pickle.dump(self.accumulated_logs_dict, file_object,
-                        pickle.HIGHEST_PROTOCOL)
-
-        # Delete extra keys due to changes in ProgbarLogger
-        loss_name_list = list(logs.keys())
-        split_name_list = ["valid", "test"]
-        for loss_name, split_name in product(loss_name_list, split_name_list):
-            if loss_name.startswith(split_name):
-                _ = logs.pop(loss_name)
-
-
-def main(_):
-    print("Getting hyperparameters ...")
-    print("Using command {}".format(" ".join(sys.argv)))
-    flag_values_dict = FLAGS.flag_values_dict()
-    for flag_name in sorted(flag_values_dict.keys()):
-        flag_value = flag_values_dict[flag_name]
-        print(flag_name, flag_value)
-    root_folder_path, dataset_name = FLAGS.root_folder_path, FLAGS.dataset_name
-    backbone_model_name, freeze_backbone_for_N_epochs = FLAGS.backbone_model_name, FLAGS.freeze_backbone_for_N_epochs
-    image_height, image_width = FLAGS.image_height, FLAGS.image_width
-    input_shape = (image_height, image_width, 3)
-    region_num = FLAGS.region_num
-    kernel_regularization_factor = FLAGS.kernel_regularization_factor
-    bias_regularization_factor = FLAGS.bias_regularization_factor
-    gamma_regularization_factor = FLAGS.gamma_regularization_factor
-    beta_regularization_factor = FLAGS.beta_regularization_factor
-    use_adaptive_l1_l2_regularizer = FLAGS.use_adaptive_l1_l2_regularizer
-    min_value_in_clipping, max_value_in_clipping = FLAGS.min_value_in_clipping, FLAGS.max_value_in_clipping
-    validation_size = FLAGS.validation_size
-    validation_size = int(
-        validation_size) if validation_size > 1 else validation_size
-    use_validation = validation_size != 0
-    testing_size = FLAGS.testing_size
-    testing_size = int(testing_size) if testing_size > 1 else testing_size
-    use_testing = testing_size != 0
-    evaluate_validation_every_N_epochs = FLAGS.evaluate_validation_every_N_epochs
-    evaluate_testing_every_N_epochs = FLAGS.evaluate_testing_every_N_epochs
-    identity_num_per_batch, image_num_per_identity = FLAGS.identity_num_per_batch, FLAGS.image_num_per_identity
-    batch_size = identity_num_per_batch * image_num_per_identity
-    learning_rate_mode, learning_rate_start, learning_rate_end = FLAGS.learning_rate_mode, FLAGS.learning_rate_start, FLAGS.learning_rate_end
-    learning_rate_base, learning_rate_warmup_epochs, learning_rate_steady_epochs = FLAGS.learning_rate_base, FLAGS.learning_rate_warmup_epochs, FLAGS.learning_rate_steady_epochs
-    learning_rate_drop_factor, learning_rate_lower_bound = FLAGS.learning_rate_drop_factor, FLAGS.learning_rate_lower_bound
-    steps_per_epoch = FLAGS.steps_per_epoch
-    epoch_num = FLAGS.epoch_num
-    workers = FLAGS.workers
-    use_multiprocessing = workers > 1
-    image_augmentor_name = FLAGS.image_augmentor_name
-    use_data_augmentation_in_training = FLAGS.use_data_augmentation_in_training
-    use_data_augmentation_in_evaluation = FLAGS.use_data_augmentation_in_evaluation
-    augmentation_num = FLAGS.augmentation_num
-    use_horizontal_flipping_in_evaluation = FLAGS.use_horizontal_flipping_in_evaluation
-    use_label_smoothing_in_training = FLAGS.use_label_smoothing_in_training
-    use_identity_balancing_in_training = FLAGS.use_identity_balancing_in_training
-    use_re_ranking = FLAGS.use_re_ranking
-    evaluation_only, save_data_to_disk = FLAGS.evaluation_only, FLAGS.save_data_to_disk
-    pretrained_model_file_path = FLAGS.pretrained_model_file_path
-
-    output_folder_path = os.path.abspath(
-        os.path.join(
-            FLAGS.output_folder_path,
-            "{}_{}x{}".format(dataset_name, input_shape[0], input_shape[1]),
-            "{}_{}_{}".format(backbone_model_name, identity_num_per_batch,
-                              image_num_per_identity)))
-    shutil.rmtree(output_folder_path, ignore_errors=True)
-    os.makedirs(output_folder_path)
-    print("Recreating the output folder at {} ...".format(output_folder_path))
-
-    print("Loading the annotations of the {} dataset ...".format(dataset_name))
-    train_and_valid_accumulated_info_dataframe, test_query_accumulated_info_dataframe, \
-        test_gallery_accumulated_info_dataframe, train_and_valid_attribute_name_to_label_encoder_dict = \
-        load_accumulated_info_of_dataset(root_folder_path=root_folder_path, dataset_name=dataset_name)
-
-    if use_validation:
-        print("Using customized cross validation splits ...")
-        train_and_valid_identity_ID_array = train_and_valid_accumulated_info_dataframe[
-            "identity_ID"].values
-        train_indexes, valid_indexes = apply_stratifiedshufflesplit(
-            y=train_and_valid_identity_ID_array, test_size=validation_size)
-        train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe.iloc[
-            train_indexes]
-        valid_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe.iloc[
-            valid_indexes]
-
-        print("Splitting the validation dataset ...")
-        valid_identity_ID_array = valid_accumulated_info_dataframe[
-            "identity_ID"].values
-        gallery_size = len(test_gallery_accumulated_info_dataframe) / (
-            len(test_query_accumulated_info_dataframe) +
-            len(test_gallery_accumulated_info_dataframe))
-        valid_query_indexes, valid_gallery_indexes = apply_stratifiedshufflesplit(
-            y=valid_identity_ID_array, test_size=gallery_size)
-        valid_query_accumulated_info_dataframe = valid_accumulated_info_dataframe.iloc[
-            valid_query_indexes]
-        valid_gallery_accumulated_info_dataframe = valid_accumulated_info_dataframe.iloc[
-            valid_gallery_indexes]
-    else:
-        train_accumulated_info_dataframe = train_and_valid_accumulated_info_dataframe
-        valid_query_accumulated_info_dataframe, valid_gallery_accumulated_info_dataframe = None, None
-
-    if use_testing:
-        if testing_size != 1:
-            print("Using a subset from the testing dataset ...")
-            test_accumulated_info_dataframe = pd.concat([
-                test_query_accumulated_info_dataframe,
-                test_gallery_accumulated_info_dataframe
-            ],
-                                                        ignore_index=True)
-            test_identity_ID_array = test_accumulated_info_dataframe[
-                "identity_ID"].values
-            _, test_query_and_gallery_indexes = apply_groupshufflesplit(
-                groups=test_identity_ID_array, test_size=testing_size)
-            test_query_mask = test_query_and_gallery_indexes < len(
-                test_query_accumulated_info_dataframe)
-            test_gallery_mask = np.logical_not(test_query_mask)
-            test_query_indexes, test_gallery_indexes = test_query_and_gallery_indexes[
-                test_query_mask], test_query_and_gallery_indexes[
-                    test_gallery_mask]
-            test_query_accumulated_info_dataframe = test_accumulated_info_dataframe.iloc[
-                test_query_indexes]
-            test_gallery_accumulated_info_dataframe = test_accumulated_info_dataframe.iloc[
-                test_gallery_indexes]
-    else:
-        test_query_accumulated_info_dataframe, test_gallery_accumulated_info_dataframe = None, None
-
-    print("Initiating the model ...")
-    training_model, inference_model, preprocess_input = init_model(
-        backbone_model_name=backbone_model_name,
-        freeze_backbone_for_N_epochs=freeze_backbone_for_N_epochs,
-        input_shape=input_shape,
-        region_num=region_num,
-        attribute_name_to_label_encoder_dict=
-        train_and_valid_attribute_name_to_label_encoder_dict,
-        kernel_regularization_factor=kernel_regularization_factor,
-        bias_regularization_factor=bias_regularization_factor,
-        gamma_regularization_factor=gamma_regularization_factor,
-        beta_regularization_factor=beta_regularization_factor,
-        use_adaptive_l1_l2_regularizer=use_adaptive_l1_l2_regularizer,
-        min_value_in_clipping=min_value_in_clipping,
-        max_value_in_clipping=max_value_in_clipping)
-    visualize_model(model=training_model, output_folder_path=output_folder_path)
-
-    print("Initiating the image augmentor {} ...".format(image_augmentor_name))
-    image_augmentor = getattr(image_augmentation,
-                              image_augmentor_name)(image_height=image_height,
-                                                    image_width=image_width)
-    image_augmentor.compose_transforms()
-
-    print("Perform training ...")
-    train_generator = TrainDataSequence(
-        accumulated_info_dataframe=train_accumulated_info_dataframe,
-        attribute_name_to_label_encoder_dict=
-        train_and_valid_attribute_name_to_label_encoder_dict,
-        preprocess_input=preprocess_input,
-        input_shape=input_shape,
-        image_augmentor=image_augmentor,
-        use_data_augmentation=use_data_augmentation_in_training,
-        use_identity_balancing=use_identity_balancing_in_training,
-        use_label_smoothing=use_label_smoothing_in_training,
-        label_repetition_num=len(training_model.outputs),
-        identity_num_per_batch=identity_num_per_batch,
-        image_num_per_identity=image_num_per_identity,
-        steps_per_epoch=steps_per_epoch)
-    valid_evaluator_callback = Evaluator(
-        inference_model=inference_model,
-        split_name="valid",
-        query_accumulated_info_dataframe=valid_query_accumulated_info_dataframe,
-        gallery_accumulated_info_dataframe=
-        valid_gallery_accumulated_info_dataframe,
-        preprocess_input=preprocess_input,
-        input_shape=input_shape,
-        image_augmentor=image_augmentor,
-        use_data_augmentation=use_data_augmentation_in_evaluation,
-        augmentation_num=augmentation_num,
-        use_horizontal_flipping=use_horizontal_flipping_in_evaluation,
-        use_re_ranking=use_re_ranking,
-        batch_size=batch_size,
-        workers=workers,
-        use_multiprocessing=use_multiprocessing,
-        every_N_epochs=evaluate_validation_every_N_epochs,
-        output_folder_path=output_folder_path if save_data_to_disk else None)
-    test_evaluator_callback = Evaluator(
-        inference_model=inference_model,
-        split_name="test",
-        query_accumulated_info_dataframe=test_query_accumulated_info_dataframe,
-        gallery_accumulated_info_dataframe=
-        test_gallery_accumulated_info_dataframe,
-        preprocess_input=preprocess_input,
-        input_shape=input_shape,
-        image_augmentor=image_augmentor,
-        use_data_augmentation=use_data_augmentation_in_evaluation,
-        augmentation_num=augmentation_num,
-        use_horizontal_flipping=use_horizontal_flipping_in_evaluation,
-        use_re_ranking=use_re_ranking,
-        batch_size=batch_size,
-        workers=workers,
-        use_multiprocessing=use_multiprocessing,
-        every_N_epochs=evaluate_testing_every_N_epochs,
-        output_folder_path=output_folder_path if save_data_to_disk else None)
-    inspect_regularization_factors_callback = InspectRegularizationFactors()
-
-    if len(pretrained_model_file_path) > 0:
-        assert os.path.isfile(pretrained_model_file_path)
-        print("Loading weights from {} ...".format(pretrained_model_file_path))
-        # Hacky workaround for the issue with "load_weights"
-        if use_adaptive_l1_l2_regularizer:
-            _ = training_model.test_on_batch(train_generator[0])
-        # Load weights from the pretrained model
-        training_model.load_weights(pretrained_model_file_path)
-    if evaluation_only:
-        print("Freezing the whole model in the evaluation_only mode ...")
-        training_model.trainable = False
-        training_model.compile(**training_model.compile_kwargs)
-
-        assert testing_size == 1, "Use all testing samples for evaluation!"
-        historylogger_callback = HistoryLogger(
-            output_folder_path=os.path.join(output_folder_path, "evaluation"))
-        training_model.fit(x=train_generator,
-                           steps_per_epoch=1,
-                           callbacks=[
-                               valid_evaluator_callback,
-                               test_evaluator_callback, historylogger_callback
-                           ],
-                           epochs=1,
-                           workers=workers,
-                           use_multiprocessing=use_multiprocessing,
-                           verbose=2)
+        if min_distance <= 0.17:
+            gallery_idx = distances.index(min_distance)
+            gallery_id = gallery_identity_id_array[gallery_idx]
+            gallery_camera_id = gallery_camera_id_array[gallery_idx]
+            query_id = query_identity_id_array[i]
+            query_camera_id = query_camera_id_array[i]
+            print("Identity {}.{} is closest ({:.4f}) to identity {}.{}.".format(
+                query_camera_id, query_id, min_distance, gallery_camera_id,
+                gallery_id))
 
     print("All done!")
 
